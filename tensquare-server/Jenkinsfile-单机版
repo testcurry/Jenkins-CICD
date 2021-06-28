@@ -1,0 +1,63 @@
+node {
+    //git凭证ID
+    def git_auth="9d6eadb6-0db7-435a-9dbd-7bd9180eb5c2"
+    //gitlab项目地址
+    def git_url="git@192.168.200.132:Testcy1204/tensquare-server.git"
+    //镜像版本号
+    def image_tag="latest"
+    //定义harbor存储的镜像标签
+    def harbor_tag="1.1.2"
+    //harbor url地址
+    def harbor_url="192.168.200.133:12004"
+    //定义harbor项目名称
+    def harbor_project="tensquare"
+    //harbor-auth凭证ID
+    def harbor_auth="f4c2e282-6d6c-473f-89c5-8592ac66bae3"
+
+    //从gitlab拉取代码
+    stage('从gitlab拉取代码') {
+        checkout([$class: 'GitSCM', branches: [[name: "*/${branch}"]], extensions: [], userRemoteConfigs: [[credentialsId: "${git_auth}", url: "${git_url}"]]])
+    }
+
+    //sonarqube代码扫描
+    stage('sonarqube代码扫描') {
+        //定义当前Jenkins的sonarqubeScanner的环境
+       def scannerHome=tool 'sonar-scanner'
+        //引用当前sonarqube server的环境
+       withSonarQubeEnv('sonarqube') {
+           sh """
+                   cd ${server_name}
+                   ${scannerHome}/bin/sonar-scanner
+            """
+        }
+    }
+
+    //insatll tensquare-common依赖
+    stage('编译安装公共子工程tensquare_common') {
+        sh "mvn -f tensquare_common clean install"
+    }
+
+    //编译打包微服务工程
+    stage('编译打包微服务工程镜像，并上传镜像到harbor镜像仓库') {
+        //构建镜像
+        sh "mvn -f ${server_name} clean package dockerfile:build"
+        //上传到harbor镜像仓库
+        //定义镜像名称
+        def imageName="${server_name}:${image_tag}"
+        //定义harbor存储的tag版本号
+        def imageNameInHarbor="${server_name}:${harbor_tag}"
+        //对镜像打标签
+        sh "docker tag ${imageName} ${harbor_url}/${harbor_project}/${imageNameInHarbor}"
+        //推送镜像到harbor镜像仓库
+        withCredentials([usernamePassword(credentialsId: "${harbor_auth}", passwordVariable: 'password', usernameVariable: 'username')]) {
+            //登录到harbor服务器
+            sh "docker login -u ${username} -p ${password} ${harbor_url}  "
+            sh "docker push ${harbor_url}/${harbor_project}/${imageNameInHarbor}"
+            sh "echo 镜像推送成功---------------------Succssed! "
+        }
+	
+	    //部署应用
+        sshPublisher(publishers: [sshPublisherDesc(configName: 'master_server', transfers: [sshTransfer(cleanRemote: false, excludes: '', execCommand: "/opt/jenkins_shell/deploy.sh $harbor_url $harbor_project $server_name $harbor_tag $port", execTimeout: 120000, flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: '', remoteDirectorySDF: false, removePrefix: '', sourceFiles: '')], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: false)])
+    }
+
+}
